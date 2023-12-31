@@ -54,23 +54,42 @@ def fetch_random_image_url(api_key, search_term='presentation'):
         return None
 
 # Function to generate slide content using OpenAI's gpt-3.5-turbo
-def generate_slide_content(api_key, prompt):
+# Function to generate slide content using OpenAI's gpt-3.5-turbo
+def generate_unique_slide_content(api_key, prompt, previous_contents):
     openai.api_key = api_key
 
     try:
-        modified_prompt = (f"Create a summary title and {MAX_BULLETS} bullet points with no more than "
-                           f"{MAX_WORDS_PER_BULLET} words each about: {prompt}")
+        # Build a conversation history for the model to reference
+        conversation = [
+            {"role": "system", "content": "You are a helpful assistant. Generate a concise slide title and bullet points."},
+        ]
+
+        # Add previous content to the conversation history
+        for content in previous_contents:
+            conversation.append({"role": "user", "content": content})
+
+        # Adjusted prompt for bullet point format
+        adjusted_prompt = f"Create a short title and bullet points for a slide about the following topic: {prompt}. Limit the title to less than 5 words and provide up to 6 bullet points with no more than 10 words each."
+
+        # Prompt the model to generate content based on the conversation history
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": modified_prompt}
-            ]
+            messages=conversation + [{"role": "user", "content": adjusted_prompt}]
         )
-        return response['choices'][0]['message']['content']
+
+        # Parse the response to separate title and bullet points
+        content = response['choices'][0]['message']['content']
+        title, *bullets = content.split('\n')
+        # Ensure title is concise
+        title = title if len(title.split()) <= 5 else ' '.join(title.split()[:5])
+        # Ensure each bullet is concise
+        bullets = [' '.join(bullet.split()[:10]) for bullet in bullets if bullet]
+
+        return title, bullets[:6]  # Return up to 6 bullet points
     except Exception as e:
         print(f"An error occurred: {e}")
         return None
+
     
 def estimate_text_height(text, font_size_pt, slide_width_px, slide_height_px, text_box_margin_px=50):
     # Assume an average character width at 12pt font size and scale according to actual font size
@@ -87,21 +106,16 @@ def estimate_text_height(text, font_size_pt, slide_width_px, slide_height_px, te
     total_text_height_pt = line_count * (font_size_pt * 1.2)
     return total_text_height_pt
 
-
-
 def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
     prs = Presentation()
-
-    for _ in range(num_slides):
+    previous_contents = [] 
+    
+    for slide_number in range(num_slides):
         slide_layout = prs.slide_layouts[5]  # Use a blank layout
         slide = prs.slides.add_slide(slide_layout)
 
         # Generate slide content and fetch an image
-        slide_content = generate_slide_content(api_key_openai, prompt)
-        title, *bullets = slide_content.split('\n')
-
-        # Remove "Summary Title:" if present
-        title = title.replace("Summary Title: ", "").strip()
+        title, bullets = generate_unique_slide_content(api_key_openai, prompt, previous_contents)
 
         # Add title
         title_shape = slide.shapes.title
@@ -110,8 +124,8 @@ def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
         # Define text box position and size
         left = Inches(0.5)
         top = Inches(1.5)
-        text_width = Inches(5)  # Set the text box width manually
-        text_height = Inches(4.5)  # Set the text box height manually
+        text_width = Inches(5)  # Half the slide width for text
+        text_height = Inches(4.5)  # Adjust as needed
 
         # Add text box
         textbox = slide.shapes.add_textbox(left, top, text_width, text_height)
@@ -125,24 +139,22 @@ def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
             p.level = 0
             p.font.size = Pt(18)
 
-        # Fetch and add an image beside the text box
-        random_image_url = fetch_random_image_url(api_key_unsplash, prompt)
-        if random_image_url:
-            response = urllib.request.urlopen(random_image_url)
-            image_stream = io.BytesIO(response.read())
-            # Set the image position to be to the right of the text box
-            image_left = left + text_width + Inches(0.5)  # Add a small margin between text and image
-            image_top = top
-            # Set the image width to take up the rest of the slide width
-            image_width = prs.slide_width - text_width - Inches(1)  # Subtract the text box width and margins
-            # Keep the image height proportional to the slide height
-            image_height = prs.slide_height - top - Inches(1)  # Subtract the top margin and a little extra
-            img_shape = slide.shapes.add_picture(image_stream, image_left, image_top, image_width, image_height)
-            # Adjust the image height if it's too tall
-            if img_shape.height > image_height:
-                img_shape.height = image_height
-                img_shape.width = image_width
+        # Check if text overflows and adjust font size if necessary
+        if len(text_frame.paragraphs) > 6:  # Threshold for text overflow
+            for paragraph in text_frame.paragraphs:
+                paragraph.font.size = Pt(16)  # Reduce font size
 
+        # Fetch and add an image beside the text box
+        for img_num in range(MAX_IMAGES_PER_SLIDE):
+            random_image_url = fetch_random_image_url(api_key_unsplash, prompt)
+            if random_image_url:
+                response = urllib.request.urlopen(random_image_url)
+                image_stream = io.BytesIO(response.read())
+                image_left = left + text_width + Inches(0.5)  # Space between text and image
+                image_top = top
+                image_width = prs.slide_width - text_width - Inches(1.0)  # Remaining width
+                image_height = prs.slide_height - top - Inches(1.0)  # Remaining height
+                img_shape = slide.shapes.add_picture(image_stream, image_left, image_top, image_width, image_height)
 
     # Generate a file name based on the prompt or a random UUID
     if prompt and all(c.isalnum() or c.isspace() for c in prompt):
