@@ -17,6 +17,7 @@ import re
 UNSPLASH_API_KEY = 'unsplash_key_goes_here'
 OPENAI_API_KEY = 'openai_key_goes_here'
 
+
 # Define these at the top of your script, after your imports
 MAX_BULLETS = 3  # Limit the number of bullet points
 MAX_WORDS_PER_BULLET = 10  # Limit the number of words per bullet point
@@ -53,42 +54,69 @@ def fetch_random_image_url(api_key, search_term='presentation'):
         print(f"Failed to fetch images: Status code {response.status_code}")
         return None
 
-# Function to generate slide content using OpenAI's gpt-3.5-turbo
-# Function to generate slide content using OpenAI's gpt-3.5-turbo
-def generate_unique_slide_content(api_key, prompt, previous_contents):
+def generate_slide_title(api_key, prompt, slide_number, previous_titles):
     openai.api_key = api_key
 
     try:
-        # Build a conversation history for the model to reference
-        conversation = [
-            {"role": "system", "content": "You are a helpful assistant. Generate a concise slide title and bullet points."},
-        ]
+        # Contextual prompt for logical progression without slide numbers
+        context = " ".join(previous_titles[-3:])  # Use only the last 3 titles for context to avoid prompt getting too long
+        adjusted_prompt = f"Create a concise title that introduces a new aspect of '{prompt}', without numbering, considering previous topics: {context}."
 
-        # Add previous content to the conversation history
-        for content in previous_contents:
-            conversation.append({"role": "user", "content": content})
-
-        # Adjusted prompt for bullet point format
-        adjusted_prompt = f"Create a short title and bullet points for a slide about the following topic: {prompt}. Limit the title to less than 5 words and provide up to 6 bullet points with no more than 10 words each."
-
-        # Prompt the model to generate content based on the conversation history
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=conversation + [{"role": "user", "content": adjusted_prompt}]
+            messages=[{"role": "system", "content": "You are a helpful assistant."}, 
+                      {"role": "user", "content": adjusted_prompt}]
         )
 
-        # Parse the response to separate title and bullet points
-        content = response['choices'][0]['message']['content']
-        title, *bullets = content.split('\n')
-        # Ensure title is concise
-        title = title if len(title.split()) <= 5 else ' '.join(title.split()[:5])
-        # Ensure each bullet is concise
-        bullets = [' '.join(bullet.split()[:10]) for bullet in bullets if bullet]
+        title = response['choices'][0]['message']['content'].strip().strip('"')
 
-        return title, bullets[:6]  # Return up to 6 bullet points
+        # Remove any slide numbering added by the model
+        title = re.sub(r'^Slide \d+:?\s*', '', title, flags=re.I)
+
+        # Limit title length
+        max_title_length = 70  # or any number you see fit
+        if len(title) > max_title_length:
+            title = title[:max_title_length].rsplit(' ', 1)[0] + '...'  # Avoid cutting words in half
+
+        if title in previous_titles:
+            print(f"Warning: Duplicate or empty title for slide {slide_number}. Generated title: '{title}'")
+            title = f"{prompt} Aspect {slide_number}"  # Fallback title
+
+        return title
+
+    except Exception as e:
+        print(f"An error occurred while generating slide title: {e}")
+        return f"{prompt} Aspect {slide_number}"  # Fallback title
+
+
+
+def generate_unique_slide_content(api_key, slide_title, prompt, max_bullets=4, max_words_per_bullet=20):
+    openai.api_key = api_key
+
+    try:
+        adjusted_prompt = f"Provide a concise summary in {max_bullets} bullet points, each with no more than {max_words_per_bullet} words, explaining the key aspects of '{slide_title}' relevant to the theme '{prompt}'."
+
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "system", "content": "You are a helpful assistant."}, 
+                      {"role": "user", "content": adjusted_prompt}]
+        )
+
+        content = response['choices'][0]['message']['content']
+        bullets = [line.strip() for line in content.split('\n') if line.strip().startswith('-')]
+        # Trim each bullet to the word limit
+        trimmed_bullets = []
+        for bullet in bullets:
+            words = bullet.strip('- ').split()
+            trimmed_bullet = ' '.join(words[:max_words_per_bullet])
+            trimmed_bullets.append(trimmed_bullet)
+        
+        return trimmed_bullets[:max_bullets]
+
     except Exception as e:
         print(f"An error occurred: {e}")
-        return None
+        return [f"Details on '{slide_title}' will be discussed."]
+
 
     
 def estimate_text_height(text, font_size_pt, slide_width_px, slide_height_px, text_box_margin_px=50):
@@ -108,19 +136,34 @@ def estimate_text_height(text, font_size_pt, slide_width_px, slide_height_px, te
 
 def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
     prs = Presentation()
-    previous_contents = [] 
+    previous_titles = []
+    previous_contents = []  # Initialize the variable to store all generated content
 
-    for slide_number in range(num_slides):
+    for slide_number in range(1, num_slides + 1):
         slide_layout = prs.slide_layouts[5]  # Use a blank layout
         slide = prs.slides.add_slide(slide_layout)
-        unique_prompt = f"{prompt} {slide_number + 1}"
 
-        # Generate slide content and fetch an image
-        title, bullets = generate_unique_slide_content(api_key_openai, unique_prompt, previous_contents)
-        
-        # Add title
+        # Generate the slide title without slide numbering
+        slide_title = generate_slide_title(api_key_openai, prompt, slide_number, previous_titles).replace(f"Slide {slide_number}:", "").strip()
+        previous_titles.append(slide_title)
+
+        # Fetch an image relevant to the slide title
+        search_term = f"{slide_title} Doctor Who"  # Customize your search term based on slide content
+        image_url = fetch_random_image_url(api_key_unsplash, search_term)
+
+        # Generate bullet points with a controlled length
+        bullets = generate_unique_slide_content(api_key_openai, slide_title, prompt, max_bullets=4, max_words_per_bullet=20)
+
+
+        previous_contents.append(' '.join(bullets))  # Track all generated bullet points
+
+
+        if bullets is None:
+            bullets = []  # Ensure bullets is a list to prevent iteration errors
+
+        # Add title to the slide
         title_shape = slide.shapes.title
-        title_shape.text = title
+        title_shape.text = slide_title
 
         # Define text box position and size
         left = Inches(0.5)
@@ -146,7 +189,7 @@ def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
                 paragraph.font.size = Pt(16)  # Reduce font size
 
         # Update previous_contents to include the generated content
-        slide_content = f"{title}\n{' '.join(bullets)}"
+        slide_content = f"{slide_title}\n{' '.join(bullets)}"
         previous_contents.append(slide_content)
 
         # Fetch and add an image beside the text box
