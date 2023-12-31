@@ -109,14 +109,15 @@ def estimate_text_height(text, font_size_pt, slide_width_px, slide_height_px, te
 def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
     prs = Presentation()
     previous_contents = [] 
-    
+
     for slide_number in range(num_slides):
         slide_layout = prs.slide_layouts[5]  # Use a blank layout
         slide = prs.slides.add_slide(slide_layout)
+        unique_prompt = f"{prompt} {slide_number + 1}"
 
         # Generate slide content and fetch an image
-        title, bullets = generate_unique_slide_content(api_key_openai, prompt, previous_contents)
-
+        title, bullets = generate_unique_slide_content(api_key_openai, unique_prompt, previous_contents)
+        
         # Add title
         title_shape = slide.shapes.title
         title_shape.text = title
@@ -143,6 +144,10 @@ def create_presentation(prompt, num_slides, api_key_unsplash, api_key_openai):
         if len(text_frame.paragraphs) > 6:  # Threshold for text overflow
             for paragraph in text_frame.paragraphs:
                 paragraph.font.size = Pt(16)  # Reduce font size
+
+        # Update previous_contents to include the generated content
+        slide_content = f"{title}\n{' '.join(bullets)}"
+        previous_contents.append(slide_content)
 
         # Fetch and add an image beside the text box
         for img_num in range(MAX_IMAGES_PER_SLIDE):
